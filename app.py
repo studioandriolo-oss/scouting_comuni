@@ -5,65 +5,63 @@ import requests
 st.set_page_config(page_title="Scouting Comuni Veneti", layout="wide")
 st.title("Scouting Comuni Veneti (> 6000 abitanti)")
 
-# --- FONTE DATI 1 & 2: INDICEPA + ISTAT ---
 @st.cache_data
 def carica_dati_base():
-    # 1. Lettura File (Usiamo latin1 che è il formato spesso usato dalla PA italiana)
+    # --- 1. LETTURA INDICEPA ---
     try:
-        pa_df = pd.read_csv("amministrazioni.txt", sep='\t', dtype=str, encoding='latin1', on_bad_lines='skip')
+        # L'encoding 'utf-8-sig' neutralizza il bug dei caratteri sporchi (ï»¿) a inizio file
+        pa_df = pd.read_csv("amministrazioni.txt", sep='\t', dtype=str, encoding='utf-8-sig', on_bad_lines='skip')
     except FileNotFoundError:
         st.error("❌ File 'amministrazioni.txt' non trovato nel repository GitHub!")
         return pd.DataFrame(), pd.DataFrame()
 
-    # Salviamo una copia grezza intatta per il debug visivo
     pa_raw = pa_df.copy()
-
-    # Puliamo i nomi delle colonne (a volte la PA inserisce spazi prima del nome della colonna)
     pa_df.columns = pa_df.columns.str.strip()
 
-    # FILTRO ANTIPROIETTILE: Usiamo le sigle esatte delle province venete, saltando i campi descrittivi
-    province_veneto = ['VI', 'VR', 'PD', 'TV', 'VE', 'RO', 'BL']
-    
-    if 'Provincia' in pa_df.columns:
-        pa_df['Provincia'] = pa_df['Provincia'].astype(str).str.strip().str.upper()
-        pa_veneto = pa_df[pa_df['Provincia'].isin(province_veneto)].copy()
+    # Filtriamo in modo specifico solo gli Enti che sono "Comuni" veri e propri in "Veneto"
+    if 'tipologia_istat' in pa_df.columns and 'Regione' in pa_df.columns:
+        pa_veneto = pa_df[
+            (pa_df['tipologia_istat'].astype(str).str.contains('Comuni', case=False, na=False)) &
+            (pa_df['Regione'].astype(str).str.strip().str.upper() == 'VENETO')
+        ].copy()
     else:
-        st.error("❌ La colonna 'Provincia' è assente dal file IndicePA. Hanno cambiato tracciato!")
+        st.error("❌ Colonne 'tipologia_istat' o 'Regione' mancanti. Il tracciato del Ministero è cambiato.")
         return pd.DataFrame(), pa_raw
 
-    # 2. Dati ISTAT
+    # --- 2. LETTURA ISTAT ---
     url_pop = "https://raw.githubusercontent.com/opendatasicilia/comuni-italiani/main/dati/popolazione_2021.csv"
     url_comuni = "https://raw.githubusercontent.com/opendatasicilia/comuni-italiani/main/dati/comuni.csv"
     
     pop_df = pd.read_csv(url_pop, dtype=str)
     comuni_df = pd.read_csv(url_comuni, dtype=str)
     
-    istat_df = pd.merge(comuni_df, pop_df, on='pro_com_t')
+    # Trucco da ingegneri dei dati: forziamo i codici ISTAT a numeri interi.
+    # Così evitiamo che i file perdano gli zeri iniziali ("001001" vs "1001") facendo fallire l'incrocio.
+    comuni_df['codice_int'] = pd.to_numeric(comuni_df['pro_com_t'], errors='coerce')
+    pop_df['codice_int'] = pd.to_numeric(pop_df['pro_com_t'], errors='coerce')
+    
+    istat_df = pd.merge(comuni_df, pop_df, on='codice_int', how='inner')
     istat_df['pop_res_21'] = pd.to_numeric(istat_df['pop_res_21'], errors='coerce')
     istat_grandi = istat_df[istat_df['pop_res_21'] > 6000].copy()
     
-    # 3. Incrocio
-    if 'Comune' in pa_veneto.columns:
-        pa_veneto['Comune_Upper'] = pa_veneto['Comune'].astype(str).str.strip().str.upper()
-    else:
-        st.error("❌ La colonna 'Comune' manca in IndicePA.")
-        return pd.DataFrame(), pa_raw
-        
+    # --- 3. INCROCIO DEI DUE DATABASE ---
+    pa_veneto['Comune_Upper'] = pa_veneto['Comune'].astype(str).str.strip().str.upper()
     istat_grandi['Comune_Upper'] = istat_grandi['comune'].astype(str).str.strip().str.upper()
     
     dati_uniti = pd.merge(pa_veneto, istat_grandi, on='Comune_Upper', how='inner')
     
-    # Selezioniamo solo le colonne che esistono per evitare crash
-    colonne_utili = ['Comune', 'Provincia', 'pop_res_21', 'Indirizzo', 'mail1', 'mail2', 'mail3']
+    # Prepariamo la tabella pulita verificando le colonne disponibili
+    colonne_utili = ['Comune', 'Provincia', 'pop_res_21', 'Indirizzo', 'mail1', 'mail2', 'mail3', 'sito_istituzionale']
     colonne_presenti = [c for c in colonne_utili if c in dati_uniti.columns]
     
     df_pulito = dati_uniti[colonne_presenti].copy()
     
     rinomine = {
         'pop_res_21': 'Popolazione', 
-        'mail1': 'PEC Primaria', 
+        'mail1': 'PEC/Mail 1', 
         'mail2': 'PEC/Mail 2', 
-        'mail3': 'Mail Protocollo'
+        'mail3': 'PEC/Mail Protocollo',
+        'sito_istituzionale': 'Sito Web'
     }
     df_pulito.rename(columns={k: v for k, v in rinomine.items() if k in df_pulito.columns}, inplace=True)
     
@@ -75,7 +73,7 @@ def cerca_comuni_su_arteria(codice_strada):
     overpass_url = "https://overpass-api.de/api/interpreter"
     codice_strada = codice_strada.upper().strip()
     
-    # Crea la variante con spazio (es. se l'utente digita "SP247", cerca anche "SP 247")
+    # Crea in automatico la variante con lo spazio (es. "SP247" diventa anche "SP 247")
     variante_spazio = f"{codice_strada[:2]} {codice_strada[2:]}" if len(codice_strada) > 2 and codice_strada[:2].isalpha() and codice_strada[2:].isdigit() else codice_strada
 
     query = f"""
@@ -92,34 +90,27 @@ def cerca_comuni_su_arteria(codice_strada):
     try:
         risposta = requests.post(overpass_url, data={'data': query})
         if risposta.status_code != 200:
-            st.error(f"Errore dal server della mappa: {risposta.status_code}. Riprova tra poco.")
+            st.error("Errore di connessione ai server cartografici.")
             return []
             
         dati_json = risposta.json()
-        comuni_trovati = []
-        for elemento in dati_json.get('elements', []):
-            nome = elemento.get('tags', {}).get('name')
-            if nome:
-                comuni_trovati.append(nome.strip().upper())
-        return comuni_trovati
-    except Exception as e:
-        st.error(f"Errore di connessione cartografica: {e}")
+        return [elemento.get('tags', {}).get('name').strip().upper() for elemento in dati_json.get('elements', []) if elemento.get('tags', {}).get('name')]
+    except Exception:
         return []
 
-# --- INTERFACCIA UTENTE (STREAMLIT) ---
+# --- INTERFACCIA UTENTE ---
 
-st.write("🔄 Caricamento e incrocio dati in corso...")
+st.write("🔄 Calcolo incroci database in corso...")
 dati_base, pa_raw = carica_dati_base()
 
-# STRUMENTO DI DEBUG NELLA BARRA LATERALE
 st.sidebar.markdown("---")
 if st.sidebar.checkbox("🛠️ Modalità Debug (Mostra file grezzo)"):
-    st.warning("Visualizzazione delle prime 50 righe del file amministrazioni.txt così come scaricato dal Ministero:")
+    st.warning("Visualizzazione file puro dal Ministero:")
     st.dataframe(pa_raw.head(50))
-    st.stop() # Blocca l'esecuzione del resto dell'app per permetterti di ispezionare la tabella
+    st.stop()
 
 if dati_base.empty:
-    st.warning("⚠️ La tabella di base è vuota. Attiva la 'Modalità Debug' nella barra laterale sinistra per verificare l'aspetto dei dati scaricati.")
+    st.error("⚠️ Nessun dato trovato. La tabella è ancora vuota.")
 else:
     st.sidebar.header("Filtri di Ricerca")
     
@@ -134,20 +125,19 @@ else:
         risultati = risultati[risultati['Provincia'] == provincia_scelta]
     
     if strada_scelta:
-        with st.spinner(f"🔍 Scansione della mappa per l'arteria {strada_scelta} (può richiedere fino a 30 secondi)..."):
+        with st.spinner(f"🔍 Mappatura geografica dell'arteria {strada_scelta}..."):
             elenco_comuni_strada = cerca_comuni_su_arteria(strada_scelta)
             
         if elenco_comuni_strada:
             risultati['Comune_Upper'] = risultati['Comune'].astype(str).str.strip().str.upper()
             risultati = risultati[risultati['Comune_Upper'].isin(elenco_comuni_strada)]
             risultati.drop(columns=['Comune_Upper'], errors='ignore', inplace=True)
-            st.sidebar.success("✅ Strada individuata! Comuni filtrati.")
+            st.sidebar.success("✅ Strada individuata! Comuni limitrofi filtrati.")
         else:
-            st.sidebar.warning(f"⚠️ Nessun comune trovato. Su OpenStreetMap la {strada_scelta} potrebbe essere mappata diversamente.")
+            st.sidebar.warning(f"⚠️ Nessun comune trovato. Verifica il formato della strada sulla mappa.")
     
-    # --- VISUALIZZAZIONE RISULTATI ---
     st.subheader("Risultati dello Scouting")
-    st.write(f"Record trovati: **{len(risultati)}** comuni corrispondenti ai criteri impostati.")
+    st.write(f"Record validi trovati: **{len(risultati)}**")
     
     if not risultati.empty:
         risultati.sort_values(by=['Provincia', 'Comune'], inplace=True)
@@ -155,9 +145,4 @@ else:
         st.dataframe(risultati, use_container_width=True)
         
         csv = risultati.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Scarica Report in CSV",
-            data=csv,
-            file_name='scouting_comuni_filtrati.csv',
-            mime='text/csv',
-        )
+        st.download_button("📥 Scarica Report CSV", data=csv, file_name='scouting_veneto.csv', mime='text/csv')
