@@ -9,20 +9,12 @@ st.title("Scouting Comuni Veneti (> 6000 abitanti)")
 # --- FONTE DATI 1 & 2: INDICEPA + ISTAT ---
 @st.cache_data
 def carica_dati_base():
-    # 1. Scaricamento IndicePA simulando un browser
-    url_indicepa = "https://indicepa.gov.it/ipa-dati/dataset/893df1ec-f232-4458-baae-55a0b77b73cc/resource/274f88e5-3d84-48f8-b385-eec3ef34731a/download/amministrazioni.txt"
-    
-    # Questo dizionario 'headers' è il nostro travestimento da browser
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
-    # Facciamo la richiesta superando il firewall
-    risposta_pa = requests.get(url_indicepa, headers=headers)
-    risposta_pa.raise_for_status() # Verifica che non ci siano altri errori HTTP
-    
-    # Leggiamo il testo scaricato mettendolo in memoria (io.StringIO) e passandolo a Pandas
-    pa_df = pd.read_csv(io.StringIO(risposta_pa.text), sep='\t', dtype=str)
+    # 1. Lettura del file IndicePA direttamente da GitHub
+    try:
+        pa_df = pd.read_csv("amministrazioni.txt", sep='\t', dtype=str)
+    except FileNotFoundError:
+        st.error("❌ File 'amministrazioni.txt' non trovato! Assicurati di averlo caricato su GitHub.")
+        return pd.DataFrame() # Blocca l'esecuzione senza crashare
     
     pa_veneto = pa_df[
         (pa_df['tipologia_istat'] == 'Comuni e loro Consorzi e Associazioni') &
