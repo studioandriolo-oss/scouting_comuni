@@ -27,17 +27,14 @@ def carica_dati_completi():
         return pd.DataFrame()
 
     # --- 2. LETTURA UNITA' ORGANIZZATIVE (Uffici Tecnici) ---
-    # Sistema corazzato per estrarre il file testuale dallo ZIP ignorando le codifiche di Excel
     ou_df = pd.DataFrame()
     try:
         with zipfile.ZipFile("ou.zip", 'r') as z:
-            # Trova il file vero ignorando le cartelle di sistema nascoste
             file_validi = [f for f in z.namelist() if not f.startswith('__MACOSX') and not f.startswith('.')]
             if file_validi:
                 with z.open(file_validi[0]) as f:
                     contenuto_grezzo = f.read()
                     
-                    # Prova tutte le codifiche possibili (UTF-8, UTF-16 di Excel, Latin1)
                     try:
                         testo = contenuto_grezzo.decode('utf-8-sig')
                     except UnicodeDecodeError:
@@ -50,7 +47,7 @@ def carica_dati_completi():
                     ou_df.columns = ou_df.columns.str.strip()
                     
     except Exception as e:
-        st.warning(f"⚠️ Impossibile caricare gli uffici dal file ou.zip. Formato non riconosciuto. Errore: {e}")
+        st.warning(f"⚠️ Impossibile caricare gli uffici dal file ou.zip. Procedo solo con i dati dei Comuni. (Errore: {e})")
 
     # Filtriamo solo gli uffici tecnici
     keywords = 'TECNIC|LAVORI|PUBBLIC|EDILIZIA|PATRIMONIO|MANUTENZION|PNRR'
@@ -78,32 +75,54 @@ def carica_dati_completi():
     istat_grandi['Comune_Upper'] = istat_grandi['comune'].astype(str).str.strip().str.upper()
     comuni_base = pd.merge(pa_veneto, istat_grandi, on='Comune_Upper', how='inner')
     
-    # Incrocio con gli uffici: applichiamo i suffissi '_comune' e '_ufficio'
     if not uffici_tecnici.empty and 'cod_amm' in comuni_base.columns and 'cod_amm' in uffici_tecnici.columns:
         dati_finali = pd.merge(comuni_base, uffici_tecnici, on='cod_amm', how='left', suffixes=('_comune', '_ufficio'))
     else:
         dati_finali = comuni_base.copy()
 
-    # --- 5. COSTRUZIONE DECLARATIVA DELLE COLONNE ---
-    # Creiamo una tabella pulita forzando l'esistenza di tutte le colonne
+    # --- 5. COSTRUZIONE DECLARATIVA DELLE COLONNE (BLINDATA) ---
     df_pulito = pd.DataFrame()
-    df_pulito['Comune'] = dati_finali['Comune'].str.title()
+    df_pulito['Comune'] = dati_finali['Comune'].astype(str).str.title()
     df_pulito['Prov'] = dati_finali['Provincia']
     df_pulito['Popolazione'] = dati_finali['pop_res_21']
     
-    df_pulito['Settore/Ufficio'] = dati_finali.get('des_ou', 'Dati uffici mancanti').fillna('Non indicato')
-    
-    # Isoliamo categoricamente il Dirigente dell'Ufficio Tecnico (scartando il Sindaco)
-    nome_tecnico = dati_finali.get('nome_resp_ufficio', pd.Series([''] * len(dati_finali))).fillna('').str.title()
-    cognome_tecnico = dati_finali.get('cogn_resp_ufficio', pd.Series([''] * len(dati_finali))).fillna('').str.title()
-    df_pulito['Dirigente Tecnico'] = (nome_tecnico + ' ' + cognome_tecnico).str.strip()
-    df_pulito['Dirigente Tecnico'].replace('', 'Non nominato/Non indicato', inplace=True)
-    
-    # Telefoni ed Email specifici dell'ufficio, con fallback al protocollo
-    df_pulito['Telefono Ufficio'] = dati_finali.get('telefono_ufficio', dati_finali.get('telefono', '-')).fillna('-')
-    df_pulito['Email Diretta Ufficio'] = dati_finali.get('mail1_ufficio', '-').fillna('-')
-    df_pulito['PEC Protocollo Comune'] = dati_finali.get('mail1_comune', dati_finali.get('mail1', '-')).fillna('-')
-    
+    # Settore/Ufficio
+    if 'des_ou' in dati_finali.columns:
+        df_pulito['Settore/Ufficio'] = dati_finali['des_ou'].fillna('Non indicato')
+    else:
+        df_pulito['Settore/Ufficio'] = 'Dati uffici mancanti'
+        
+    # Dirigente Tecnico
+    if 'nome_resp_ufficio' in dati_finali.columns and 'cogn_resp_ufficio' in dati_finali.columns:
+        nome = dati_finali['nome_resp_ufficio'].fillna('').astype(str).str.title()
+        cognome = dati_finali['cogn_resp_ufficio'].fillna('').astype(str).str.title()
+        df_pulito['Dirigente Tecnico'] = (nome + ' ' + cognome).str.strip()
+        df_pulito['Dirigente Tecnico'].replace('', 'Non indicato', inplace=True)
+    else:
+        df_pulito['Dirigente Tecnico'] = 'Non indicato'
+        
+    # Telefono Ufficio
+    if 'telefono_ufficio' in dati_finali.columns:
+        df_pulito['Telefono Ufficio'] = dati_finali['telefono_ufficio'].fillna('-')
+    elif 'telefono' in dati_finali.columns:
+        df_pulito['Telefono Ufficio'] = dati_finali['telefono'].fillna('-')
+    else:
+        df_pulito['Telefono Ufficio'] = '-'
+        
+    # Email Diretta
+    if 'mail1_ufficio' in dati_finali.columns:
+        df_pulito['Email Diretta Ufficio'] = dati_finali['mail1_ufficio'].fillna('-')
+    else:
+        df_pulito['Email Diretta Ufficio'] = '-'
+        
+    # PEC Protocollo
+    if 'mail1_comune' in dati_finali.columns:
+        df_pulito['PEC Protocollo Comune'] = dati_finali['mail1_comune'].fillna('-')
+    elif 'mail1' in dati_finali.columns:
+        df_pulito['PEC Protocollo Comune'] = dati_finali['mail1'].fillna('-')
+    else:
+        df_pulito['PEC Protocollo Comune'] = '-'
+        
     return df_pulito
 
 # --- FONTE DATI 3: GEOGRAFIA DA OPENSTREETMAP ---
@@ -149,7 +168,7 @@ if dati_base.empty:
 else:
     st.sidebar.header("Filtri di Ricerca")
     
-    province_disponibili = ["Tutte"] + sorted(dati_base['Prov'].unique().tolist())
+    province_disponibili = ["Tutte"] + sorted(dati_base['Prov'].dropna().unique().tolist())
     provincia_scelta = st.sidebar.selectbox("Seleziona Provincia:", province_disponibili)
     
     strada_scelta = st.sidebar.text_input("Codice Arteria (es. SP247 o SS11):", "").strip()
