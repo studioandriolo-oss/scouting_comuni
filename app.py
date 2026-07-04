@@ -7,7 +7,7 @@ st.set_page_config(page_title="Scouting Comuni Veneti", layout="wide")
 st.title("Scouting Comuni Veneti (> 6000 abitanti)")
 
 # --- FONTE DATI 1 & 2: INDICEPA + ISTAT ---
-@@st.cache_data
+@st.cache_data
 def carica_dati_base():
     # 1. Scaricamento IndicePA simulando un browser
     url_indicepa = "https://indicepa.gov.it/ipa-dati/dataset/893df1ec-f232-4458-baae-55a0b77b73cc/resource/274f88e5-3d84-48f8-b385-eec3ef34731a/download/amministrazioni.txt"
