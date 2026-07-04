@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 import requests
+import zipfile
+import io
 
 st.set_page_config(page_title="Scouting Comuni Veneti", layout="wide")
 st.title("Scouting Comuni Veneti (> 6000 abitanti)")
 
 @st.cache_data
 def carica_dati_completi():
-    # --- 1. LETTURA AMMINISTRAZIONI (Protocollo Generale) ---
+    # --- 1. LETTURA AMMINISTRAZIONI (Protocollo Generale e Sindaco) ---
     try:
         pa_df = pd.read_csv("amministrazioni.txt", sep='\t', dtype=str, encoding='utf-8-sig', on_bad_lines='skip')
     except FileNotFoundError:
@@ -24,18 +26,37 @@ def carica_dati_completi():
     else:
         return pd.DataFrame()
 
- # --- 2. LETTURA UNITA' ORGANIZZATIVE (Uffici Tecnici e Dirigenti) ---
+    # --- 2. LETTURA UNITA' ORGANIZZATIVE (Uffici Tecnici) ---
+    # Sistema corazzato per estrarre il file testuale dallo ZIP ignorando le codifiche di Excel
+    ou_df = pd.DataFrame()
     try:
-        ou_df = pd.read_csv("ou.txt", sep='\t', dtype=str, encoding='utf-8-sig', on_bad_lines='skip')
-        
-        # Filtriamo solo gli uffici che ci interessano tramite parole chiave
-        keywords = 'TECNIC|LAVORI|PUBBLIC|EDILIZIA|PATRIMONIO|MANUTENZION|PNRR'
-        if 'des_ou' in ou_df.columns:
-            uffici_tecnici = ou_df[ou_df['des_ou'].astype(str).str.contains(keywords, case=False, na=False)].copy()
-        else:
-            uffici_tecnici = pd.DataFrame()
-    except FileNotFoundError:
-        st.warning("⚠️ File 'ou.txt' mancante. Caricalo su GitHub per vedere i nomi dei dirigenti e le mail degli uffici tecnici!")
+        with zipfile.ZipFile("ou.zip", 'r') as z:
+            # Trova il file vero ignorando le cartelle di sistema nascoste
+            file_validi = [f for f in z.namelist() if not f.startswith('__MACOSX') and not f.startswith('.')]
+            if file_validi:
+                with z.open(file_validi[0]) as f:
+                    contenuto_grezzo = f.read()
+                    
+                    # Prova tutte le codifiche possibili (UTF-8, UTF-16 di Excel, Latin1)
+                    try:
+                        testo = contenuto_grezzo.decode('utf-8-sig')
+                    except UnicodeDecodeError:
+                        try:
+                            testo = contenuto_grezzo.decode('utf-16')
+                        except UnicodeDecodeError:
+                            testo = contenuto_grezzo.decode('latin1')
+                            
+                    ou_df = pd.read_csv(io.StringIO(testo), sep='\t', dtype=str, on_bad_lines='skip')
+                    ou_df.columns = ou_df.columns.str.strip()
+                    
+    except Exception as e:
+        st.warning(f"⚠️ Impossibile caricare gli uffici dal file ou.zip. Formato non riconosciuto. Errore: {e}")
+
+    # Filtriamo solo gli uffici tecnici
+    keywords = 'TECNIC|LAVORI|PUBBLIC|EDILIZIA|PATRIMONIO|MANUTENZION|PNRR'
+    if not ou_df.empty and 'des_ou' in ou_df.columns:
+        uffici_tecnici = ou_df[ou_df['des_ou'].astype(str).str.contains(keywords, case=False, na=False)].copy()
+    else:
         uffici_tecnici = pd.DataFrame()
 
     # --- 3. LETTURA ISTAT (Popolazione) ---
@@ -53,50 +74,39 @@ def carica_dati_completi():
     istat_grandi = istat_df[istat_df['pop_res_21'] > 6000].copy()
     
     # --- 4. INCROCI MULTIPLI ---
-    # A. Incrocio Comuni + Popolazione
     pa_veneto['Comune_Upper'] = pa_veneto['Comune'].astype(str).str.strip().str.upper()
     istat_grandi['Comune_Upper'] = istat_grandi['comune'].astype(str).str.strip().str.upper()
     comuni_base = pd.merge(pa_veneto, istat_grandi, on='Comune_Upper', how='inner')
     
-    # B. Incrocio con gli Uffici Tecnici (Se ou.txt è presente)
+    # Incrocio con gli uffici: applichiamo i suffissi '_comune' e '_ufficio'
     if not uffici_tecnici.empty and 'cod_amm' in comuni_base.columns and 'cod_amm' in uffici_tecnici.columns:
-        # Uniamo i dati. how='left' significa che se un comune non ha inserito l'ufficio tecnico nel database, mostriamo comunque il comune
         dati_finali = pd.merge(comuni_base, uffici_tecnici, on='cod_amm', how='left', suffixes=('_comune', '_ufficio'))
     else:
         dati_finali = comuni_base.copy()
-        
-    # --- 5. PULIZIA DELLE COLONNE FINALI ---
-    # Creiamo la colonna Dirigente unendo Nome e Cognome
-    if 'nome_resp' in dati_finali.columns and 'cogn_resp' in dati_finali.columns:
-        dati_finali['nome_resp'] = dati_finali['nome_resp'].fillna('')
-        dati_finali['cogn_resp'] = dati_finali['cogn_resp'].fillna('')
-        dati_finali['Dirigente'] = dati_finali['nome_resp'] + ' ' + dati_finali['cogn_resp']
-        dati_finali['Dirigente'] = dati_finali['Dirigente'].str.strip()
-    else:
-        dati_finali['Dirigente'] = "Dati uffici mancanti"
 
-    # Selezioniamo e rinominiamo solo le colonne che ci interessano davvero
-    colonne_scelte = {
-        'Comune': 'Comune',
-        'Provincia': 'Prov',
-        'pop_res_21': 'Popolazione',
-        'des_ou': 'Nome Ufficio',
-        'Dirigente': 'Dirigente',
-        'telefono': 'Telefono Ufficio',
-        'mail1_ufficio': 'Email Ufficio',
-        'mail1_comune': 'PEC Protocollo'
-    }
+    # --- 5. COSTRUZIONE DECLARATIVA DELLE COLONNE ---
+    # Creiamo una tabella pulita forzando l'esistenza di tutte le colonne
+    df_pulito = pd.DataFrame()
+    df_pulito['Comune'] = dati_finali['Comune'].str.title()
+    df_pulito['Prov'] = dati_finali['Provincia']
+    df_pulito['Popolazione'] = dati_finali['pop_res_21']
     
-    # Teniamo solo le colonne che esistono effettivamente dopo i vari incroci
-    colonne_presenti = {k: v for k, v in colonne_scelte.items() if k in dati_finali.columns}
-    df_pulito = dati_finali[list(colonne_presenti.keys())].rename(columns=colonne_presenti)
+    df_pulito['Settore/Ufficio'] = dati_finali.get('des_ou', 'Dati uffici mancanti').fillna('Non indicato')
     
-    # Puliamo i valori vuoti visivamente
-    df_pulito.fillna('-', inplace=True)
+    # Isoliamo categoricamente il Dirigente dell'Ufficio Tecnico (scartando il Sindaco)
+    nome_tecnico = dati_finali.get('nome_resp_ufficio', pd.Series([''] * len(dati_finali))).fillna('').str.title()
+    cognome_tecnico = dati_finali.get('cogn_resp_ufficio', pd.Series([''] * len(dati_finali))).fillna('').str.title()
+    df_pulito['Dirigente Tecnico'] = (nome_tecnico + ' ' + cognome_tecnico).str.strip()
+    df_pulito['Dirigente Tecnico'].replace('', 'Non nominato/Non indicato', inplace=True)
+    
+    # Telefoni ed Email specifici dell'ufficio, con fallback al protocollo
+    df_pulito['Telefono Ufficio'] = dati_finali.get('telefono_ufficio', dati_finali.get('telefono', '-')).fillna('-')
+    df_pulito['Email Diretta Ufficio'] = dati_finali.get('mail1_ufficio', '-').fillna('-')
+    df_pulito['PEC Protocollo Comune'] = dati_finali.get('mail1_comune', dati_finali.get('mail1', '-')).fillna('-')
     
     return df_pulito
 
-# --- FONTE DATI 3: GEOGRAFIA DA OPENSTREETMAP (CON FIX ANTI-BLOCCO) ---
+# --- FONTE DATI 3: GEOGRAFIA DA OPENSTREETMAP ---
 @st.cache_data
 def cerca_comuni_su_arteria(codice_strada):
     overpass_url = "https://overpass-api.de/api/interpreter"
@@ -114,16 +124,14 @@ def cerca_comuni_su_arteria(codice_strada):
     out tags;
     """
     
-    # IL TRAVESTIMENTO: Facciamo credere al server che siamo un browser Chrome per evitare l'errore 403
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     try:
-        # Aggiunto il parametro headers
         risposta = requests.post(overpass_url, data={'data': query}, headers=headers, timeout=25)
         if risposta.status_code != 200:
-            st.error(f"Errore {risposta.status_code} dal server cartografico. Il server potrebbe essere intasato, riprova tra qualche minuto.")
+            st.error("Errore server cartografico. Riprova più tardi.")
             return []
             
         dati_json = risposta.json()
@@ -161,7 +169,7 @@ else:
             risultati.drop(columns=['Comune_Upper'], errors='ignore', inplace=True)
             st.sidebar.success("✅ Strada individuata e comuni filtrati.")
         else:
-            st.sidebar.warning(f"⚠️ Nessun comune trovato. Il server mappa potrebbe essere saturo o la sigla errata.")
+            st.sidebar.warning(f"⚠️ Nessun comune trovato.")
     
     st.subheader("Risultati dello Scouting (Uffici Tecnici)")
     st.write(f"Uffici in target trovati: **{len(risultati)}**")
@@ -172,4 +180,4 @@ else:
         st.dataframe(risultati, use_container_width=True)
         
         csv = risultati.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Scarica Report CSV", data=csv, file_name='scouting_uffici_tecnici_veneto.csv', mime='text/csv')
+        st.download_button("📥 Scarica Report CSV", data=csv, file_name='scouting_uffici_tecnici.csv', mime='text/csv')
