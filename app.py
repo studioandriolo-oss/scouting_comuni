@@ -1,16 +1,28 @@
 import streamlit as st
 import pandas as pd
 import requests
+import io
 
 st.set_page_config(page_title="Scouting Comuni Veneti", layout="wide")
 st.title("Scouting Comuni Veneti (> 6000 abitanti)")
 
 # --- FONTE DATI 1 & 2: INDICEPA + ISTAT ---
-@st.cache_data
+@@st.cache_data
 def carica_dati_base():
-    # Scaricamento IndicePA
+    # 1. Scaricamento IndicePA simulando un browser
     url_indicepa = "https://indicepa.gov.it/ipa-dati/dataset/893df1ec-f232-4458-baae-55a0b77b73cc/resource/274f88e5-3d84-48f8-b385-eec3ef34731a/download/amministrazioni.txt"
-    pa_df = pd.read_csv(url_indicepa, sep='\t', dtype=str)
+    
+    # Questo dizionario 'headers' è il nostro travestimento da browser
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    # Facciamo la richiesta superando il firewall
+    risposta_pa = requests.get(url_indicepa, headers=headers)
+    risposta_pa.raise_for_status() # Verifica che non ci siano altri errori HTTP
+    
+    # Leggiamo il testo scaricato mettendolo in memoria (io.StringIO) e passandolo a Pandas
+    pa_df = pd.read_csv(io.StringIO(risposta_pa.text), sep='\t', dtype=str)
     
     pa_veneto = pa_df[
         (pa_df['tipologia_istat'] == 'Comuni e loro Consorzi e Associazioni') &
